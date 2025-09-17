@@ -34,7 +34,7 @@ const float DT = 0.2f;
 * C main function.
 */
 int main(int argc, char* argv[]) {
-  projectName = "5650 CUDA Intro: Boids";
+  projectName = "5650 CUDA Intro: Boids 111";
 
   if (init(argc, argv)) {
     mainLoop();
