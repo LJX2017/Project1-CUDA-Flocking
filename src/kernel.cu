@@ -240,10 +240,43 @@ void Boids::copyBoidsToVBO(float *vbodptr_positions, float *vbodptr_velocities) 
 * in the `pos` and `vel` arrays.
 */
 __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *pos, const glm::vec3 *vel) {
-  // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
+    // Rule 1: boids fly towards their local perceived center of mass, which excludes themselves
+	glm::vec3 sum = glm::vec3(0.0f, 0.0f, 0.0f);
+	glm::vec3 direction = glm::vec3(0.0f, 0.0f, 0.0f);
+    int count = 0;
+    for (int i = 0; i < N; i++) {
+        if (i != iSelf && glm::distance(pos[iSelf], pos[i]) <= rule1Distance) {
+            sum += pos[i];
+            count++;
+        }
+    }
+    if (count > 0) {
+        sum /= count;
+        direction += (sum - pos[iSelf]) * rule1Scale;
+    }
   // Rule 2: boids try to stay a distance d away from each other
+    sum = glm::vec3(0.0f, 0.0f, 0.0f);
+    count = 0;
+    for (int i = 0; i < N; i++) {
+        if (i != iSelf && glm::distance(pos[iSelf], pos[i]) < rule2Distance) {
+            sum -= (pos[i] - pos[iSelf]);
+        }
+    }
+    direction += sum * rule2Scale;
   // Rule 3: boids try to match the speed of surrounding boids
-  return glm::vec3(0.0f, 0.0f, 0.0f);
+	sum = glm::vec3(0.0f, 0.0f, 0.0f);
+	count = 0;
+    for (int i = 0; i < N; i++) {
+        if (i != iSelf && glm::distance(pos[iSelf], pos[i]) < rule3Distance) {
+            sum += vel[i];
+            count++;
+        }
+    }
+    if (count > 0) {
+        sum /= count;
+        direction += sum * rule3Scale;
+    }
+  return direction;
 }
 
 /**
@@ -252,6 +285,15 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 */
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
+    int index = threadIdx.x + (blockIdx.x * blockDim.x);
+    if (index >= N) {
+        return;
+	}
+	vel2[index] += computeVelocityChange(N, index, pos, vel1);
+    if (glm::length(vel2[index]) > maxSpeed) {
+        vel2[index] = glm::normalize(vel2[index]) * maxSpeed;
+	}
+
   // Compute a new velocity based on pos and vel1
   // Clamp the speed
   // Record the new velocity into vel2. Question: why NOT vel1?
@@ -357,8 +399,14 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 * Step the entire N-body simulation by `dt` seconds.
 */
 void Boids::stepSimulationNaive(float dt) {
+    dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
   // TODO-1.2 - use the kernels you wrote to step the simulation forward in time.
+	kernUpdateVelocityBruteForce<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
+    kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_pos, dev_vel2);
+
+
   // TODO-1.2 ping-pong the velocity buffers
+    cudaMemcpy(dev_vel1, dev_vel2, numObjects * sizeof(float), cudaMemcpyDeviceToDevice);
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
@@ -401,7 +449,125 @@ void Boids::endSimulation() {
 
   // TODO-2.1 TODO-2.3 - Free any additional buffers here.
 }
+void Boids::unitTest2() {
+    // This test now combines the verification for computeVelocityChange's logic
+    // with the test for the full kernUpdateVelocityBruteForce kernel.
+    std::cout << "\nTesting kernUpdateVelocityBruteForce and underlying logic:" << std::endl;
+    int testN = 4; // Small test with 4 boids
+    glm::vec3* host_pos = new glm::vec3[testN];
+    glm::vec3* host_vel1 = new glm::vec3[testN];
+    glm::vec3* host_vel2 = new glm::vec3[testN];
 
+    // Initialize test positions and velocities
+    host_pos[0] = glm::vec3(0.0f, 0.0f, 0.0f);
+    host_pos[1] = glm::vec3(2.0f, 0.0f, 0.0f); // Within all rule distances for boid 0
+    host_pos[2] = glm::vec3(0.0f, 2.0f, 0.0f); // Within all rule distances for boid 0
+    host_pos[3] = glm::vec3(10.0f, 10.0f, 10.0f); // Outside all rule distances
+
+    host_vel1[0] = glm::vec3(0.0f, 0.0f, 0.0f);
+    host_vel1[1] = glm::vec3(0.5f, 0.0f, 0.0f);
+    host_vel1[2] = glm::vec3(0.0f, 0.5f, 0.0f);
+    host_vel1[3] = glm::vec3(1.0f, 1.0f, 1.0f);
+
+    // Allocate device memory
+    glm::vec3* dev_test_pos, * dev_test_vel1, * dev_test_vel2;
+    cudaMalloc((void**)&dev_test_pos, testN * sizeof(glm::vec3));
+    cudaMalloc((void**)&dev_test_vel1, testN * sizeof(glm::vec3));
+    cudaMalloc((void**)&dev_test_vel2, testN * sizeof(glm::vec3));
+
+    // Copy data to device
+    cudaMemcpy(dev_test_pos, host_pos, testN * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+    cudaMemcpy(dev_test_vel1, host_vel1, testN * sizeof(glm::vec3), cudaMemcpyHostToDevice);
+
+    // Call the velocity update kernel
+    dim3 testBlocks((testN + blockSize - 1) / blockSize);
+    std::cout << "Running kernUpdateVelocityBruteForce..." << std::endl;
+    kernUpdateVelocityBruteForce << <testBlocks, blockSize >> > (testN, dev_test_pos, dev_test_vel1, dev_test_vel2);
+    cudaDeviceSynchronize();
+    checkCUDAErrorWithLine("Velocity update kernel test failed!");
+
+    // Copy results back
+    cudaMemcpy(host_vel2, dev_test_vel2, testN * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+
+    // Verify the internal logic of computeVelocityChange for boid 0
+    std::cout << "\nVerifying computeVelocityChange logic for boid 0:" << std::endl;
+    glm::vec3 actual_v_change = host_vel2[0] - host_vel1[0];
+    glm::vec3 expected_v_change(-0.165f, -0.165f, 0.0f);
+
+    std::cout << "  Actual change:   (" << actual_v_change.x << ", " << actual_v_change.y << ", " << actual_v_change.z << ")" << std::endl;
+    std::cout << "  Expected change: (" << expected_v_change.x << ", " << expected_v_change.y << ", " << expected_v_change.z << ")" << std::endl;
+
+    if (glm::distance(actual_v_change, expected_v_change) < 0.001f) {
+        std::cout << "  *** computeVelocityChange logic PASSED! ***" << std::endl;
+    }
+    else {
+        std::cout << "  *** computeVelocityChange logic FAILED! ***" << std::endl;
+    }
+
+    // Print full results for all boids
+    std::cout << "\nFull velocity update results:" << std::endl;
+    for (int i = 0; i < testN; i++) {
+        std::cout << "Boid " << i << " - Original velocity: ("
+            << host_vel1[i].x << ", " << host_vel1[i].y << ", " << host_vel1[i].z
+            << "), New velocity: ("
+            << host_vel2[i].x << ", " << host_vel2[i].y << ", " << host_vel2[i].z << ")" << std::endl;
+    }
+
+    // Test for step update (position update)
+    std::cout << "\nTesting position update kernel (kernUpdatePos):" << std::endl;
+
+    // Save original positions for comparison
+    glm::vec3* original_pos = new glm::vec3[testN];
+    memcpy(original_pos, host_pos, testN * sizeof(glm::vec3));
+
+    // Test position update with a known dt
+    float testDt = 0.1f;
+    kernUpdatePos << <testBlocks, blockSize >> > (testN, testDt, dev_test_pos, dev_test_vel2);
+    cudaDeviceSynchronize();
+    checkCUDAErrorWithLine("Position update kernel test failed!");
+
+    // Copy updated positions back
+    cudaMemcpy(host_pos, dev_test_pos, testN * sizeof(glm::vec3), cudaMemcpyDeviceToHost);
+
+    // Print results
+    std::cout << "Position update results after dt = " << testDt << ":" << std::endl;
+    for (int i = 0; i < testN; i++) {
+        std::cout << "Boid " << i << " - Original position: ("
+            << original_pos[i].x << ", " << original_pos[i].y << ", " << original_pos[i].z
+            << "), New position: ("
+            << host_pos[i].x << ", " << host_pos[i].y << ", " << host_pos[i].z << ")" << std::endl;
+
+        // Verify position update is correct: new_pos = old_pos + vel * dt
+        glm::vec3 expected_pos = original_pos[i] + host_vel2[i] * testDt;
+
+        // Account for wrapping at scene boundaries
+        if (expected_pos.x < -scene_scale) expected_pos.x = scene_scale;
+        if (expected_pos.y < -scene_scale) expected_pos.y = scene_scale;
+        if (expected_pos.z < -scene_scale) expected_pos.z = scene_scale;
+
+        if (expected_pos.x > scene_scale) expected_pos.x = -scene_scale;
+        if (expected_pos.y > scene_scale) expected_pos.y = -scene_scale;
+        if (expected_pos.z > scene_scale) expected_pos.z = -scene_scale;
+
+        std::cout << "  Expected position: ("
+            << expected_pos.x << ", " << expected_pos.y << ", " << expected_pos.z << ")" << std::endl;
+
+        if (abs(host_pos[i].x - expected_pos.x) > 0.001f ||
+            abs(host_pos[i].y - expected_pos.y) > 0.001f ||
+            abs(host_pos[i].z - expected_pos.z) > 0.001f) {
+            std::cout << "  *** Position verification failed! ***" << std::endl;
+        }
+    }
+
+    // Clean up
+    delete[] host_pos;
+    delete[] host_vel1;
+    delete[] host_vel2;
+    delete[] original_pos;
+    cudaFree(dev_test_pos);
+    cudaFree(dev_test_vel1);
+    cudaFree(dev_test_vel2);
+}
 void Boids::unitTest() {
   // LOOK-1.2 Feel free to write additional tests here.
 

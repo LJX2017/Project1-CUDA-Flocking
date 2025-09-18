@@ -228,6 +228,7 @@ void initShaders(GLuint * program) {
 
     Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
                        // your CUDA development setup is ready to go.
+    Boids::unitTest2();
 
     while (!glfwWindowShouldClose(window)) {
       glfwPollEvents();

@@ -9,4 +9,5 @@ namespace Boids {
 
     void endSimulation();
     void unitTest();
+    void unitTest2();
 }
