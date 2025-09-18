@@ -23,7 +23,7 @@
 
 // LOOK-2.1 LOOK-2.3 - toggles for UNIFORM_GRID and COHERENT_GRID
 #define VISUALIZE 1
-#define UNIFORM_GRID 0
+#define UNIFORM_GRID 1
 #define COHERENT_GRID 0
 
 // LOOK-1.2 - change this to adjust particle count in the simulation
@@ -34,7 +34,7 @@ const float DT = 0.2f;
 * C main function.
 */
 int main(int argc, char* argv[]) {
-  projectName = "5650 CUDA Intro: Boids 111123123";
+  projectName = "5650 CUDA Intro: Boids";
 
   if (init(argc, argv)) {
     mainLoop();
