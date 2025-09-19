@@ -61,6 +61,8 @@ void checkCUDAError(const char *msg, int line = -1) {
 
 #define maxSpeed 1.0f
 
+#define maxR imax(rule1Distance, imax(rule2Distance, rule3Distance))
+
 /*! Size of the starting area in simulation space. */
 #define scene_scale 100.0f
 
@@ -95,7 +97,7 @@ int *dev_gridCellEndIndices;   // to this cell?
 
 // TODO-2.3 - consider what additional buffers you might need to reshuffle
 // the position and velocity data to be coherent within cells.
-
+glm::vec3* direct_pos, direct_vel1, direct_vel2;
 // LOOK-2.1 - Grid parameters based on simulation parameters.
 // These are automatically computed for you in Boids::initSimulation
 int gridCellCount;
@@ -190,6 +192,15 @@ void Boids::initSimulation(int N) {
 
   cudaMalloc((void**)&dev_gridCellEndIndices, gridCellCount * sizeof(int));
   checkCUDAErrorWithLine("cudaMalloc dev_gridCellEndIndices failed!");
+
+  cudaMalloc((void**)&direct_pos, N * sizeof(glm::vec3));
+  checkCUDAErrorWithLine("cudaMalloc dev_pos failed!");
+
+  cudaMalloc((void**)&direct_vel1, N * sizeof(glm::vec3));
+  checkCUDAErrorWithLine("cudaMalloc dev_vel1 failed!");
+
+  cudaMalloc((void**)&direct_vel2, N * sizeof(glm::vec3));
+  checkCUDAErrorWithLine("cudaMalloc dev_vel2 failed!");
 
   dev_thrust_particleArrayIndices = thrust::device_pointer_cast(dev_particleArrayIndices);
   dev_thrust_particleGridIndices = thrust::device_pointer_cast(dev_particleGridIndices);
@@ -419,100 +430,6 @@ glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
   // - Access each boid in the cell and compute velocity change from
   //   the boids rules, if this boid is within the neighborhood distance.
   // - Clamp the speed change before putting the new speed in vel2
-    //int index = threadIdx.x + (blockIdx.x * blockDim.x);
-    //if (index >= N) {
-    //    return;
-    //}
-
-    //glm::vec3 thisPos = pos[index];
-    //glm::vec3 thisVel = vel1[index];
-
-    //glm::vec3 gridPos = (thisPos - gridMin) * inverseCellWidth;
-    //int gridX = (int)floor(gridPos.x);
-    //int gridY = (int)floor(gridPos.y);
-    //int gridZ = (int)floor(gridPos.z);
-
-    //gridX = imax(0, imin(gridX, gridResolution - 1));
-    //gridY = imax(0, imin(gridY, gridResolution - 1));
-    //gridZ = imax(0, imin(gridZ, gridResolution - 1));
-
-    //glm::vec3 perceived_center(0.0f);
-    //glm::vec3 c(0.0f);
-    //glm::vec3 perceived_velocity(0.0f);
-    //int neighborCount1 = 0;
-    //int neighborCount3 = 0;
-
-    //for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
-    //    for (int offsetY = -1; offsetY <= 1; offsetY++) {
-    //        for (int offsetX = -1; offsetX <= 1; offsetX++) {
-    //            int neighborX = gridX + offsetX;
-    //            int neighborY = gridY + offsetY;
-    //            int neighborZ = gridZ + offsetZ;
-
-    //            if (neighborX < 0 || neighborX >= gridResolution ||
-    //                neighborY < 0 || neighborY >= gridResolution ||
-    //                neighborZ < 0 || neighborZ >= gridResolution) {
-    //                continue;
-    //            }
-
-    //            int neighborCellIndex = gridIndex3Dto1D(neighborX, neighborY, neighborZ, gridResolution);
-
-    //            int startIdx = gridCellStartIndices[neighborCellIndex];
-    //            int endIdx = gridCellEndIndices[neighborCellIndex];
-
-    //            for (int j = startIdx; j < endIdx; j++) {
-    //                int otherIndex = particleArrayIndices[j];
-    //                if (otherIndex == index) {
-    //                    continue;
-    //                }
-
-    //                glm::vec3 otherPos = pos[otherIndex];
-    //                glm::vec3 otherVel = vel1[otherIndex];
-
-    //                float distance = glm::distance(thisPos, otherPos);
-
-    //                // Rule 1: Cohesion
-    //                if (distance < rule1Distance) {
-    //                    perceived_center += otherPos;
-    //                    neighborCount1++;
-    //                }
-
-    //                // Rule 2: Separation
-    //                if (distance < rule2Distance) {
-    //                    c -= (otherPos - thisPos);
-    //                }
-
-    //                // Rule 3: Alignment
-    //                if (distance < rule3Distance) {
-    //                    perceived_velocity += otherVel;
-    //                    neighborCount3++;
-    //                }
-    //            }
-    //        }
-    //    }
-    //}
-
-    //glm::vec3 velocity(0.0f);
-
-    //if (neighborCount1 > 0) {
-    //    perceived_center /= (float)neighborCount1;
-    //    velocity += (perceived_center - thisPos) * rule1Scale;
-    //}
-
-    //velocity += c * rule2Scale;
-
-    //if (neighborCount3 > 0) {
-    //    perceived_velocity /= (float)neighborCount3;
-    //    velocity += perceived_velocity * rule3Scale;
-    //}
-
-    //glm::vec3 newVel = thisVel + velocity;
-
-    //if (glm::length(newVel) > maxSpeed) {
-    //    newVel = glm::normalize(newVel) * maxSpeed;
-    //}
-
-    //vel2[index] = newVel;
     int index = (blockIdx.x * blockDim.x) + threadIdx.x;
     if (index >= N) {
         return;
@@ -527,16 +444,16 @@ glm::vec3 *pos, glm::vec3 *vel1, glm::vec3 *vel2) {
 	glm::vec3 rule3Sum = glm::vec3(0.0f, 0.0f, 0.0f);
 	int rule1Count = 0;
 	int rule3Count = 0;
-    for (float z = -0.5; z <= 0.5; z += 0.5) {
-        for (float y = -0.5; y <= 0.5; y += 0.5) {
-            for (float x = -0.5; x <= 0.5; x += 0.5) {
+    for (int z = -1; z <= 1; z += 1) {
+        for (int y = -1; y <= 1; y += 1) {
+            for (int x = -1; x <= 1; x += 1) {
 				// center of grid cell is iX*cellWidth, iY*cellWidth, iZ*cellWidth
-                glm::vec3 neighborPos = glm::vec3(pos[index].x + x * cellWidth, pos[index].y + y * cellWidth, pos[index].z + z * cellWidth);
+                glm::vec3 neighborPos = glm::vec3(pos[index].x + x * maxR, pos[index].y + y * maxR, pos[index].z + z * maxR);
 				int neighborGridID = posToGridCellIndex(neighborPos, gridMin, inverseCellWidth, gridResolution);
                 if (neighborGridID < 0 || neighborGridID >= gridResolution * gridResolution * gridResolution) {
                     continue;
                 }
-                if (neighborGridID == gridID && !(fabs(x) < 0.1 && fabs(y) < 0.1 && fabs(z) < 0.1)) {
+                if (neighborGridID == gridID && !(x == 0 && y == 0 && z == 0)) {
                     continue;
 				}
                 for (int i = gridCellStartIndices[neighborGridID]; i <= gridCellEndIndices[neighborGridID]; i++) {
